@@ -89,12 +89,15 @@ async def fetch_schedule_for_user_in_range(user_id: str, range_start: datetime, 
     try:
         logger.info(f"Fetching tasks for user {user_id} between {range_start.isoformat()} and {range_end.isoformat()}")
 
+        range_start_naive = range_start.replace(tzinfo=None)
+        range_end_naive = range_end.replace(tzinfo=None)
+
         response = (
             supabase.table("tasks")
             .select("*")
             .eq("user_id", user_id)
-            .gte("scheduled_time", range_start.isoformat())
-            .lt("scheduled_time", range_end.isoformat())
+            .gte("scheduled_time", range_start_naive.isoformat())
+            .lt("scheduled_time", range_end_naive.isoformat())
             .order("scheduled_time", desc=False)
             .execute()
         )
@@ -130,16 +133,28 @@ async def check_and_send_reminders(application: Application) -> None:
 
             try:
                 now_local = datetime.now(user_timezone)
-                reminder_start_time = now_local + timedelta(minutes=30)
-                reminder_end_time = reminder_start_time + timedelta(seconds=60) 
                 
+                # --- FIX: Snap time to the current minute to avoid drift ---
+                now_rounded = now_local.replace(second=0, microsecond=0)
+                
+                # Check for tasks starting exactly 30 minutes from this rounded time
+                reminder_start_time = now_rounded + timedelta(minutes=30)
+                reminder_end_time = reminder_start_time + timedelta(minutes=1) # 1-minute window
+                # --- End of FIX ---
+
+                # (This is the fix from last time, which is still needed)
+                # Convert aware datetimes to naive datetimes for the query
+                reminder_start_naive = reminder_start_time.replace(tzinfo=None)
+                reminder_end_naive = reminder_end_time.replace(tzinfo=None)
+
                 task_response = (
                     supabase.table("tasks")
                     .select("*")
                     .eq("user_id", user_id)
                     .eq("is_completed", False)
-                    .gte("scheduled_time", reminder_start_time.isoformat())
-                    .lt("scheduled_time", reminder_end_time.isoformat())
+                    # Query using naive ISO strings
+                    .gte("scheduled_time", reminder_start_naive.isoformat())
+                    .lt("scheduled_time", reminder_end_naive.isoformat())
                     .execute()
                 )
 
