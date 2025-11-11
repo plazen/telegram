@@ -230,13 +230,15 @@ async def handle_ai_task_creation(update: Update, context: ContextTypes.DEFAULT_
                 today_start_dt = now_local.replace(hour=user_start_hour_int, minute=0, second=0, microsecond=0)
                 today_end_dt = now_local.replace(hour=user_end_hour_int, minute=0, second=0, microsecond=0)
 
-                # This DB query is correct and fetches all tasks for the user's day
-                existing_tasks_raw = await db.fetch_schedule_for_user_in_range(user_id, today_start_dt, today_end_dt)
+                range_start_naive = today_start_dt.replace(tzinfo=None)
+                range_end_naive = today_end_dt.replace(tzinfo=None)
+
+                # This DB query MUST use naive datetimes to match the DB column
+                existing_tasks_raw = await db.fetch_schedule_for_user_in_range(user_id, range_start_naive, range_end_naive)
 
                 parsed_tasks_list = []
                 for task in existing_tasks_raw:
                     try:
-                        # --- THIS IS THE FIX ---
                         # 1. Parse the UTC datetime string from Supabase (e.g., 18:45+00:00)
                         task_start_db_time = datetime.fromisoformat(task['scheduled_time'])
                         
