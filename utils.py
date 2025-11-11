@@ -1,8 +1,55 @@
 import re
 import logging
 from datetime import datetime, timedelta, timezone
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import config 
 
 logger = logging.getLogger(__name__)
+
+KEY = bytes.fromhex(config.ENCRYPTION_KEY)
+IV_LENGTH = 12
+AUTH_TAG_LENGTH = 12
+
+def encrypt(text: str) -> str:
+    if not text:
+        return text
+    try:
+        iv = get_random_bytes(IV_LENGTH)
+        cipher = AES.new(KEY, AES.MODE_GCM, nonce=iv)
+        encrypted_bytes, auth_tag = cipher.encrypt_and_digest(text.encode('utf-8'))
+        
+        iv_hex = iv.hex()
+        auth_tag_hex = auth_tag.hex()
+        encrypted_hex = encrypted_bytes.hex()
+        
+        return f"{iv_hex}:{auth_tag_hex}:{encrypted_hex}"
+    except Exception as e:
+        logger.error(f"Encryption failed: {e}")
+        return text  
+
+def decrypt(hash_str: str) -> str:
+    if not hash_str:
+        return hash_str
+    try:
+        parts = hash_str.split(':')
+        if len(parts) != 3:
+            return hash_str
+        
+        iv = bytes.fromhex(parts[0])
+        auth_tag = bytes.fromhex(parts[1])
+        encrypted_text = bytes.fromhex(parts[2])
+        
+        cipher = AES.new(KEY, AES.MODE_GCM, nonce=iv)
+        decrypted_bytes = cipher.decrypt_and_verify(encrypted_text, auth_tag)
+        return decrypted_bytes.decode('utf-8')
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Decryption failed for hash '{hash_str[:10]}...': {e}. Returning original text.")
+        return hash_str
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during decryption: {e}")
+        return "[Decryption Error]"
+
 
 def parse_timezone_offset(offset_str: str | None) -> timezone | None:
     if not offset_str:
