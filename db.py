@@ -10,7 +10,7 @@ async def get_user_settings_by_telegram_chat_id(chat_id: str):
     try:
         response = (
             supabase.table("UserSettings")
-            .select("user_id, timezone_offset")
+            .select("user_id, timezone_offset, timetable_start, timetable_end")
             .eq("telegram_id", chat_id)
             .limit(1)
             .single()
