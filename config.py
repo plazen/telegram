@@ -17,7 +17,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY") 
-print(ENCRYPTION_KEY)
 
 # Validate environment variables
 if not TELEGRAM_TOKEN:
