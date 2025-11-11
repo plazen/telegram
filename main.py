@@ -8,6 +8,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,  # <-- NEW IMPORT
+    filters,         # <-- NEW IMPORT
 )
 from telegram.constants import ParseMode
 from supabase import create_client, AsyncClient
@@ -322,12 +324,158 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/timezone - Set your local timezone (e.g., /timezone -7)"
     )
 
+def parse_duration_to_minutes(duration_str: str) -> int | None:
+    duration_str = duration_str.lower().strip()
+    logger.info(f"Parsing duration: {duration_str}")
+    try:
+        match = re.search(r"([\d\.]+)\s*(hour|hr|h)", duration_str)
+        if match:
+            return int(float(match.group(1)) * 60)
+        
+        match = re.search(r"([\d\.]+)\s*(minute|min|m)", duration_str)
+        if match:
+            return int(float(match.group(1)))
+            
+        match = re.search(r"^([\d\.]+)$", duration_str)
+        if match:
+            return int(float(match.group(1)))
+            
+        logger.warning(f"Could not parse duration: {duration_str}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to parse duration '{duration_str}': {e}")
+        return None
+
+def parse_local_time_to_naive_datetime(time_str: str, user_timezone: timezone) -> datetime | None:
+    time_str = time_str.strip().upper()
+    logger.info(f"Parsing local time: {time_str} for timezone {user_timezone.tzname(None)}")
+    
+    time_formats_to_try = ["%H:%M", "%I:%M%p", "%I%p"] # e.g., "17:30", "5:30PM", "5PM"
+    parsed_time = None
+    
+    for fmt in time_formats_to_try:
+        try:
+            parsed_time = datetime.strptime(time_str, fmt).time()
+            break # Success
+        except ValueError:
+            continue
+    
+    if parsed_time is None:
+        logger.warning(f"Could not parse time string: {time_str}")
+        return None # Failed to parse
+
+    now_local = datetime.now(user_timezone)
+    
+    task_dt_local = now_local.replace(
+        hour=parsed_time.hour, 
+        minute=parsed_time.minute, 
+        second=0, 
+        microsecond=0
+    )
+
+    if task_dt_local < now_local:
+        logger.info("Parsed time is in the past, assuming tomorrow.")
+        task_dt_local += timedelta(days=1)
+        
+    task_dt_naive = task_dt_local.replace(tzinfo=None)
+    logger.info(f"Converted {time_str} to naive datetime {task_dt_naive.isoformat()} for DB storage")
+    
+    return task_dt_naive
+
+async def handle_ai_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.message.chat_id)
+    text = update.message.text
+    
+    match = re.match(r"i want to (.*) for (.*) at (.*)", text, re.IGNORECASE)
+    
+    if not match:
+        logger.info(f"Ignoring non-task message from {chat_id}")
+        return
+
+    logger.info(f"Matched task creation syntax from {chat_id}")
+    
+    user_settings = await get_user_settings_by_telegram_chat_id(chat_id)
+    
+    if not user_settings or not user_settings.get('user_id'):
+        await update.message.reply_text(
+            "I can't schedule this for you until I know who you are. 😢\n"
+            "Please send /start to get your Chat ID, then add it to your Plazen app settings."
+        )
+        return
+
+    user_id = user_settings['user_id']
+    user_timezone_str = user_settings.get('timezone_offset')
+    user_timezone = parse_timezone_offset(user_timezone_str)
+
+    if not user_timezone:
+        await update.message.reply_html(
+            "I can't schedule this for you until I know your timezone!\n"
+            "Please set your timezone first using <code>/timezone +5:30</code> or <code>/timezone -7</code>."
+        )
+        return
+        
+    try:
+        title = match.group(1).strip()
+        duration_str = match.group(2).strip()
+        time_str = match.group(3).strip()
+        
+        if not title:
+             await update.message.reply_text("Please provide a title for the task.")
+             return
+
+
+        duration_minutes = parse_duration_to_minutes(duration_str)
+        if duration_minutes is None:
+            await update.message.reply_html(
+                f"I didn't understand the duration <b>'{duration_str}'</b>.\n"
+                "Please try '30 min' or '1 hour' or just '30'."
+            )
+            return
+            
+
+        task_dt_naive = parse_local_time_to_naive_datetime(time_str, user_timezone)
+        if task_dt_naive is None:
+            await update.message.reply_html(
+                f"I didn't understand the time <b>'{time_str}'</b>.\n"
+                "Please try '17:30' or '5:30PM'."
+            )
+            return
+            
+        new_task = {
+            "user_id": user_id,
+            "title": title,
+            "scheduled_time": task_dt_naive.isoformat(), 
+            "duration_minutes": duration_minutes,
+            "is_completed": False
+        }
+        
+        supabase.table("tasks").insert(new_task).execute()
+        
+        # 7. Confirm to User
+        local_time_str = task_dt_naive.strftime('%H:%M on %b %d')
+        
+        await update.message.reply_html(
+            f"<b>Task Scheduled!</b> 👍\n\n"
+            f"<b>Task:</b> {title.replace('<', '&lt;').replace('>', '&gt;')}\n"
+            f"<b>When:</b> {local_time_str} ({user_timezone.tzname(None)})\n"
+            f"<b>Duration:</b> {duration_minutes} minutes"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in handle_ai_task_creation for chat {chat_id}: {e}")
+        await update.message.reply_text("Oops! Something went wrong while trying to schedule that. Please try again.")
+
+
 async def main() -> None:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("schedule", schedule_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("timezone", timezone_command))
+    
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_task_creation))
     
     try:
         logger.info("Initializing application...")
