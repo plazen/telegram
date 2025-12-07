@@ -1,9 +1,11 @@
 import logging
 from datetime import datetime
+
 from config import supabase
-from utils import encrypt, decrypt 
+from utils import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
+
 
 async def get_user_settings_by_telegram_chat_id(chat_id: str):
     logger.info(f"Looking up user settings for chat_id: {chat_id}")
@@ -26,9 +28,14 @@ async def get_user_settings_by_telegram_chat_id(chat_id: str):
         logger.error(f"Error fetching user settings for chat_id {chat_id}: {e}")
         return None
 
-async def fetch_schedule_for_user_in_range(user_id: str, range_start: datetime, range_end: datetime):
+
+async def fetch_schedule_for_user_in_range(
+    user_id: str, range_start: datetime, range_end: datetime
+):
     try:
-        logger.info(f"Fetching tasks for user {user_id} between {range_start.isoformat()} and {range_end.isoformat()}")
+        logger.info(
+            f"Fetching tasks for user {user_id} between {range_start.isoformat()} and {range_end.isoformat()}"
+        )
         response = (
             supabase.table("tasks")
             .select("*")
@@ -38,16 +45,17 @@ async def fetch_schedule_for_user_in_range(user_id: str, range_start: datetime, 
             .order("scheduled_time", desc=False)
             .execute()
         )
-        
+
         if response.data:
             for task in response.data:
-                if 'title' in task:
-                    task['title'] = decrypt(task['title'])
-        
+                if "title" in task:
+                    task["title"] = decrypt(task["title"])
+
         return response.data
     except Exception as e:
         logger.error(f"Error fetching tasks for user {user_id}: {e}")
         return []
+
 
 async def update_user_timezone(chat_id: str, offset_str: str):
     try:
@@ -63,22 +71,24 @@ async def update_user_timezone(chat_id: str, offset_str: str):
         logger.error(f"Error updating timezone for chat_id {chat_id}: {e}")
         return None
 
+
 async def create_task(new_task: dict):
     try:
-        if 'title' in new_task:
-            new_task['title'] = encrypt(new_task['title'])
+        if "title" in new_task:
+            new_task["title"] = encrypt(new_task["title"])
 
         response = supabase.table("tasks").insert(new_task).execute()
 
         if response.data:
             for task in response.data:
-                if 'title' in task:
-                    task['title'] = decrypt(task['title'])
-                    
+                if "title" in task:
+                    task["title"] = decrypt(task["title"])
+
         return response.data
     except Exception as e:
         logger.error(f"Error creating task: {e}")
         return None
+
 
 async def get_users_for_reminders():
     try:
@@ -94,7 +104,10 @@ async def get_users_for_reminders():
         logger.error(f"Error fetching users for reminders: {e}")
         return []
 
-async def get_tasks_for_reminder(user_id: str, start_naive: datetime, end_naive: datetime):
+
+async def get_tasks_for_reminder(
+    user_id: str, start_naive: datetime, end_naive: datetime
+):
     try:
         response = (
             supabase.table("tasks")
@@ -107,10 +120,54 @@ async def get_tasks_for_reminder(user_id: str, start_naive: datetime, end_naive:
         )
         if response.data:
             for task in response.data:
-                if 'title' in task:
-                    task['title'] = decrypt(task['title'])
-                    
+                if "title" in task:
+                    task["title"] = decrypt(task["title"])
+
         return response.data
     except Exception as e:
         logger.error(f"Error fetching tasks for reminder: {e}")
+        return []
+
+
+async def fetch_external_events_for_user_in_range(
+    user_id: str, range_start: datetime, range_end: datetime
+):
+    """Fetch external calendar events for a user within a date range.
+
+    External events are stored in UTC and need to be converted to local time for display.
+    The title is NOT encrypted unlike regular tasks.
+    """
+    try:
+        logger.info(
+            f"Fetching external events for user {user_id} between {range_start.isoformat()} and {range_end.isoformat()}"
+        )
+
+        # First get all calendar sources for this user
+        sources_response = (
+            supabase.table("calendar_sources")
+            .select("id")
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if not sources_response.data:
+            logger.info(f"No calendar sources found for user {user_id}")
+            return []
+
+        source_ids = [source["id"] for source in sources_response.data]
+
+        # Now fetch external events for these sources within the time range
+        events_response = (
+            supabase.table("external_events")
+            .select("*")
+            .in_("source_id", source_ids)
+            .gte("start_time", range_start.isoformat())
+            .lt("start_time", range_end.isoformat())
+            .order("start_time", desc=False)
+            .execute()
+        )
+
+        return events_response.data or []
+    except Exception as e:
+        logger.error(f"Error fetching external events for user {user_id}: {e}")
         return []
